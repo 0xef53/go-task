@@ -240,14 +240,29 @@ func (p *Pool) Cancel(tid string) {
 	t := func() Task {
 		p.mu.Lock()
 		defer p.mu.Unlock()
+
 		if t, found := p.table[tid]; found {
 			return t
 		}
+
 		return nil
 	}()
 
 	if t != nil {
 		t.Cancel()
+	}
+}
+
+func (p *Pool) CancelByLabel(labels ...string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	tids := p.classifier.Get(labels...)
+
+	for _, tid := range tids {
+		if t, found := p.table[tid]; found {
+			t.Cancel()
+		}
 	}
 }
 
