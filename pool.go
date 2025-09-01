@@ -56,7 +56,7 @@ func (p *Pool) RegisterClassifier(c TaskClassifier, names ...string) ([]string, 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	return p.classifier.Register(c)
+	return p.classifier.Register(c, names...)
 }
 
 func (p *Pool) StartTask(ctx context.Context, t Task, resp interface{}, opts ...TaskOption) (string, error) {
