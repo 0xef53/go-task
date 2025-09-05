@@ -17,4 +17,6 @@ type TaskStat struct {
 	Interrupted bool        `json:"interrupted"`
 	Progress    int         `json:"progress"`
 	Details     interface{} `json:"details"`
+
+	Metadata interface{} `json:"metadata"`
 }

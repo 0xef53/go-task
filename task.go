@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/0xef53/go-task/metadata"
+
 	log "github.com/sirupsen/logrus"
 )
 
@@ -43,6 +45,7 @@ type Task interface {
 	SetProgress(int)
 
 	Stat() *TaskStat
+	Metadata() interface{}
 }
 
 // It's an implementation of a generic task
@@ -184,6 +187,7 @@ func (t *GenericTask) Stat() *TaskStat {
 		ID:       t.id,
 		ShortID:  t.shortID(),
 		Progress: t.progress,
+		Metadata: t.Metadata(),
 	}
 
 	switch {
@@ -210,6 +214,15 @@ func (t *GenericTask) Stat() *TaskStat {
 	}
 
 	return &st
+}
+
+func (t *GenericTask) Metadata() interface{} {
+	md, ok := metadata.FromContext(t.ctx)
+	if ok {
+		return md
+	}
+
+	return nil
 }
 
 func (t *GenericTask) SetProgress(v int) {

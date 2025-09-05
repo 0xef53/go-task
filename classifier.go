@@ -59,7 +59,7 @@ func (r *rootClassifier) Register(c TaskClassifier, names ...string) ([]string, 
 	}
 
 	if len(names) == 0 {
-		ff := strings.Split(fmt.Sprintf("%T", c), ".")
+		ff := strings.Split(strings.TrimLeft(fmt.Sprintf("%T", c), "*"), ".")
 
 		names = []string{
 			fmt.Sprintf("%s-%s", ff[len(ff)-1], strings.Split(uuid.New().String(), "-")[0]),

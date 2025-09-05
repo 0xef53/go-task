@@ -95,6 +95,11 @@ func (p *Pool) StartTask(ctx context.Context, t Task, resp interface{}, opts ...
 				}
 			}
 		}
+		defer func() {
+			if !success {
+				p.classifier.Unassign(tid)
+			}
+		}()
 
 		// Verify if the context was closed in the previous step
 		if err := ctx.Err(); err != nil {
@@ -132,7 +137,6 @@ func (p *Pool) StartTask(ctx context.Context, t Task, resp interface{}, opts ...
 
 		// Progress reporter
 		if p.reporter != nil {
-			// Прогресс будео отправдяться только при условии, что progressCh != nil и что в ctx есть request-id
 			go p.reporter.SendProgress(ctx, t.ID(), progressCh)
 		}
 
@@ -157,6 +161,8 @@ func (p *Pool) StartTask(ctx context.Context, t Task, resp interface{}, opts ...
 
 			defer func() {
 				eti.release(err)
+
+				p.classifier.Unassign(t.ID())
 
 				p.wg.Done()
 
@@ -223,6 +229,34 @@ func (p *Pool) StatByLabel(labels ...string) []*TaskStat {
 	}
 
 	return stats
+}
+
+func (p *Pool) Metadata(tid string) interface{} {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if t, found := p.table[tid]; found {
+		return t.Metadata()
+	}
+
+	return nil
+}
+
+func (p *Pool) MetadataByLabel(labels ...string) []interface{} {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	tids := p.classifier.Get(labels...)
+
+	data := make([]interface{}, 0, len(tids))
+
+	for _, tid := range tids {
+		if t, found := p.table[tid]; found {
+			data = append(data, t.Metadata())
+		}
+	}
+
+	return data
 }
 
 func (p *Pool) Err(tid string) error {

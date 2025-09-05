@@ -5,71 +5,65 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 )
 
-type GroupLabelOptions struct{}
+type GroupLabelOptions struct {
+	Label string
+}
 
 func (o *GroupLabelOptions) GetLabel() string {
-	return ""
+	return o.Label
 }
 
 func (o *GroupLabelOptions) Validate() error {
+	o.Label = strings.ToLower(strings.TrimSpace(o.Label))
+
+	if len(o.Label) == 0 {
+		return fmt.Errorf("empty label")
+	}
+
 	return nil
 }
 
 type GroupLabelClassifier struct {
-	mu      sync.Mutex
-	items   map[string]struct{}
-	label   string
-	size    uint16
-	waitCh  chan struct{}
-	timeout time.Duration
+	mu    sync.Mutex
+	items map[string]map[string]struct{}
 }
 
-func NewGroupLabelClassifier(label string, size uint16, timeout time.Duration) *GroupLabelClassifier {
+func NewGroupLabelClassifier() *GroupLabelClassifier {
 	return &GroupLabelClassifier{
-		items:   make(map[string]struct{}),
-		waitCh:  make(chan struct{}),
-		label:   label,
-		size:    size,
-		timeout: timeout,
+		items: make(map[string]map[string]struct{}),
 	}
 }
 
-func (c *GroupLabelClassifier) Assign(ctx context.Context, _ Options, tid string) error {
+func (c *GroupLabelClassifier) Assign(ctx context.Context, opts Options, tid string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	tid = strings.ToLower(strings.TrimSpace(tid))
 
 	if len(tid) == 0 {
 		return fmt.Errorf("group-label-classifier: %w: empty tid", ErrValidationFailed)
 	}
 
-	c.mu.Lock()
-
-	if c.items == nil {
-		c.items = make(map[string]struct{})
-	}
-
-	if _, found := c.items[tid]; found {
-		return fmt.Errorf("group-label-classifier: %w: already exists: %s", ErrAssignmentFailed, tid)
-	}
-
-	c.mu.Unlock()
-
-	if len(c.items) == int(c.size) {
-		select {
-		case <-c.waitCh:
-		case <-ctx.Done():
-			return fmt.Errorf("group-label-classifier: %w", ctx.Err())
-		case <-time.After(c.timeout):
-			return fmt.Errorf("group-label-classifier: %w", ErrAssignmentTimeout)
+	if opts == nil {
+		return fmt.Errorf("group-label-classifier: %w: empty opts", ErrValidationFailed)
+	} else {
+		if err := opts.Validate(); err != nil {
+			return fmt.Errorf("group-label-classifier: %w: %w", ErrValidationFailed, err)
 		}
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.items[tid] = struct{}{}
+	if group, found := c.items[opts.GetLabel()]; found {
+		if _, found := group[tid]; found {
+			return fmt.Errorf("group-label-classifier: %w: already exists in group %s: %s", ErrAssignmentFailed, opts.GetLabel(), tid)
+		}
+		group[tid] = struct{}{}
+	} else {
+		c.items[opts.GetLabel()] = map[string]struct{}{
+			tid: struct{}{},
+		}
+	}
 
 	return nil
 }
@@ -84,14 +78,11 @@ func (c *GroupLabelClassifier) Unassign(tid string) {
 
 	tid = strings.ToLower(strings.TrimSpace(tid))
 
-	if _, found := c.items[tid]; found {
-		delete(c.items, tid)
+	for label, group := range c.items {
+		delete(group, tid)
 
-		if len(c.items) == (int(c.size) - 1) {
-			select {
-			case c.waitCh <- struct{}{}:
-			default:
-			}
+		if len(group) == 0 {
+			delete(c.items, label)
 		}
 	}
 }
@@ -100,19 +91,17 @@ func (c *GroupLabelClassifier) Get(labels ...string) []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for _, label := range labels {
-		if label == c.label {
-			tids := make([]string, 0, len(c.items))
+	tids := make([]string, 0, 1)
 
-			for tid := range c.items {
+	for _, label := range labels {
+		if group, found := c.items[label]; found {
+			for tid := range group {
 				tids = append(tids, tid)
 			}
-
-			return tids
 		}
 	}
 
-	return nil
+	return tids
 }
 
 func (c *GroupLabelClassifier) Len() int {
