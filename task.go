@@ -48,6 +48,24 @@ type Task interface {
 	Metadata() interface{}
 }
 
+type taskInfoKey struct{}
+
+type taskInfo struct {
+	TaskID      string    `json:"task_id"`
+	TaskShortID string    `json:"task_short_id"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func InfoFromContext(ctx context.Context) (*taskInfo, bool) {
+	if a := ctx.Value(taskInfoKey{}); a != nil {
+		if v, ok := a.(*taskInfo); ok {
+			return v, true
+		}
+	}
+
+	return nil, false
+}
+
 // It's an implementation of a generic task
 type GenericTask struct {
 	sync.Mutex
@@ -80,21 +98,20 @@ func (t *GenericTask) init(ctx context.Context, id string, progressCh chan<- int
 
 	t.id = id
 
-	//ctx = context.WithValue(ctx, "task-id", id)
-	//ctx = context.WithValue(ctx, "task-short-id", t.shortID())
+	t.createdAt = time.Now()
+	t.modifiedAt = t.createdAt
+
+	ctx = context.WithValue(ctx, taskInfoKey{}, &taskInfo{
+		TaskID:      id,
+		TaskShortID: t.shortID(),
+		CreatedAt:   t.createdAt,
+	})
 
 	t.ctx, t.cancel = context.WithCancel(ctx)
 
 	t.released = make(chan struct{})
 
 	t.Logger = log.WithField("task-id", t.shortID())
-
-	//if v := ctx.Value("request-id"); v != nil {
-	//	t.Logger = t.Logger.WithField("request-id", v.(string))
-	//}
-
-	t.createdAt = time.Now()
-	t.modifiedAt = t.createdAt
 
 	t.progressCh = progressCh
 }
