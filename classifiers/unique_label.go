@@ -33,12 +33,15 @@ func (o *UniqueLabelOptions) Validate() error {
 type UniqueLabelClassifier struct {
 	mu    sync.Mutex
 	items map[string]string
+
+	unread map[string]string
 }
 
 // NewUniqueLabelClassifier returns a new UniqueLabelClassifier instance.
 func NewUniqueLabelClassifier() *UniqueLabelClassifier {
 	return &UniqueLabelClassifier{
-		items: make(map[string]string),
+		items:  make(map[string]string),
+		unread: make(map[string]string),
 	}
 }
 
@@ -65,6 +68,8 @@ func (c *UniqueLabelClassifier) Assign(ctx context.Context, opts Options, tid st
 		return fmt.Errorf("unique-label-classifier: %w: already exists: %s", ErrAssignmentFailed, opts.GetLabel())
 	}
 
+	delete(c.unread, opts.GetLabel())
+
 	c.items[opts.GetLabel()] = tid
 
 	return nil
@@ -83,6 +88,8 @@ func (c *UniqueLabelClassifier) Unassign(tid string) {
 
 	for label, v := range c.items {
 		if v == tid {
+			c.unread[label] = tid
+
 			delete(c.items, label)
 		}
 	}
@@ -98,6 +105,12 @@ func (c *UniqueLabelClassifier) Get(labels ...string) []string {
 	for _, label := range labels {
 		if tid, found := c.items[label]; found {
 			tids = append(tids, tid)
+		} else {
+			if tid, found := c.unread[label]; found {
+				delete(c.unread, label)
+
+				tids = append(tids, tid)
+			}
 		}
 	}
 

@@ -29,6 +29,8 @@ type Pool struct {
 
 	wg       sync.WaitGroup
 	isClosed bool
+
+	unread map[string]*TaskStat
 }
 
 // NewPool returns a new instance of a task pool.
@@ -36,6 +38,7 @@ func NewPool() *Pool {
 	return &Pool{
 		table:      make(map[string]Task),
 		classifier: newRootClassifier(),
+		unread:     make(map[string]*TaskStat),
 	}
 }
 
@@ -166,6 +169,8 @@ func (p *Pool) StartTask(ctx context.Context, t Task, resp interface{}, opts ...
 
 		p.mu.Lock()
 
+		delete(p.unread, tid)
+
 		// Get all running tasks and check if a new task conflicts with them
 		for tid := range p.table {
 			if targets := p.table[tid].Targets(); p.table[tid].IsRunning() && len(targets) > 0 {
@@ -233,6 +238,8 @@ func (p *Pool) StartTask(ctx context.Context, t Task, resp interface{}, opts ...
 					defer p.mu.Unlock()
 
 					if t, found := p.table[t.ID()]; found && !t.IsRunning() {
+						p.unread[t.ID()] = t.Stat()
+
 						delete(p.table, t.ID())
 					}
 				}()
@@ -261,63 +268,67 @@ func (p *Pool) StartTask(ctx context.Context, t Task, resp interface{}, opts ...
 	return t.ID(), nil
 }
 
-// Stat returns the current status (ID, progress, state, any error information)
-// of the task identified by tid.
-// Returns nil if the task is not found in the pool.
-func (p *Pool) Stat(tid string) *TaskStat {
+// Stat returns a slice of [TaskStat] structs representing the statistics
+// (ID, progress, state, any error information) of tasks identified by the given keys.
+// The keys can be specific task IDs or sets of labels that may correspond to multiple task IDs
+// (e.g., group classifiers).
+// If no keys are provided, it returns statistics for all tasks currently in the pool.
+func (p *Pool) Stat(keys ...string) []*TaskStat {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if t, found := p.table[tid]; found {
-		return t.Stat()
+	m := make(map[string]*TaskStat)
+
+	// Run through the summary list of task IDs satisfying the given keys
+	for _, tid := range p.ids(keys...) {
+		if t, found := p.table[tid]; found {
+			m[tid] = t.Stat()
+		} else {
+			if st, found := p.unread[tid]; found {
+				delete(p.unread, tid)
+
+				m[tid] = st
+			}
+		}
 	}
 
-	return nil
-}
+	stats := make([]*TaskStat, 0, len(m))
 
-// StatByLabel retrieves statistics for all tasks matching the specified classification labels.
-func (p *Pool) StatByLabel(labels ...string) []*TaskStat {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	tids := p.classifier.Get(labels...)
-
-	stats := make([]*TaskStat, 0, len(tids))
-
-	for _, tid := range tids {
-		if t, found := p.table[tid]; found {
-			stats = append(stats, t.Stat())
+	for _, st := range m {
+		if st != nil {
+			stats = append(stats, st)
 		}
 	}
 
 	return stats
 }
 
-// Metadata returns user-defined metadata associated with the task identified by tid.
-// Returns nil if the task is not found.
-func (p *Pool) Metadata(tid string) interface{} {
+// Metadata returns a slice of user-defined metadata for the tasks identified by the given keys.
+// The keys can be specific task IDs or sets of labels that may correspond to multiple task IDs
+// (e.g., group classifiers).
+// If no keys are provided, the function returns an empty slice.
+func (p *Pool) Metadata(keys ...string) []interface{} {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if t, found := p.table[tid]; found {
-		return t.Metadata()
+	if len(keys) == 0 {
+		return make([]interface{}, 0)
 	}
 
-	return nil
-}
+	m := make(map[string]interface{})
 
-// MetadataByLabel returns metadata for all tasks matching the specified classification labels.
-func (p *Pool) MetadataByLabel(labels ...string) []interface{} {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	tids := p.classifier.Get(labels...)
-
-	data := make([]interface{}, 0, len(tids))
-
-	for _, tid := range tids {
+	// Run through the summary list of task IDs satisfying the given keys
+	for _, tid := range p.ids(keys...) {
 		if t, found := p.table[tid]; found {
-			data = append(data, t.Metadata())
+			m[tid] = t.Metadata()
+		}
+	}
+
+	data := make([]interface{}, 0, len(m))
+
+	for _, md := range m {
+		if md != nil {
+			data = append(data, md)
 		}
 	}
 
@@ -337,34 +348,20 @@ func (p *Pool) Err(tid string) error {
 	return nil
 }
 
-// Cancel cancels the task identified by tid if it exists in the pool.
-func (p *Pool) Cancel(tid string) {
-	t := func() Task {
-		p.mu.Lock()
-		defer p.mu.Unlock()
-
-		if t, found := p.table[tid]; found {
-			return t
-		}
-
-		return nil
-	}()
-
-	if t != nil {
-		t.Cancel()
-	}
-}
-
-// CancelByLabel cancels all tasks matching the specified classification labels.
-func (p *Pool) CancelByLabel(labels ...string) {
+// Cancel cancels the tasks identified by the given keys.
+// The keys can be specific task IDs or sets of labels that may correspond to multiple task IDs
+// (e.g., group classifiers).
+// If no keys are provided, no tasks are cancelled.
+func (p *Pool) Cancel(keys ...string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	tids := p.classifier.Get(labels...)
-
-	for _, tid := range tids {
-		if t, found := p.table[tid]; found {
-			t.Cancel()
+	if len(keys) > 0 {
+		// Run through the summary list of task IDs satisfying the given keys
+		for _, tid := range p.ids(keys...) {
+			if t, found := p.table[tid]; found {
+				t.Cancel()
+			}
 		}
 	}
 }
@@ -375,9 +372,11 @@ func (p *Pool) Wait(tid string) {
 	t := func() Task {
 		p.mu.Lock()
 		defer p.mu.Unlock()
+
 		if t, found := p.table[tid]; found {
 			return t
 		}
+
 		return nil
 	}()
 
@@ -386,18 +385,15 @@ func (p *Pool) Wait(tid string) {
 	}
 }
 
-// List returns a slice of all task IDs currently managed by the pool.
-func (p *Pool) List() []string {
+// List returns a slice of task IDs from the pool, that match the provided keys.
+// The keys can be specific task IDs or sets of labels that may correspond to multiple task IDs
+// (e.g., group classifiers).
+// If no keys are given, the function returns IDs of all tasks currently in the pool.
+func (p *Pool) List(keys ...string) []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	tasks := make([]string, 0, len(p.table))
-
-	for tid := range p.table {
-		tasks = append(tasks, tid)
-	}
-
-	return tasks
+	return p.ids(keys...)
 }
 
 // WaitAndClosePool waits for all running tasks to complete and marks the pool as closed,
@@ -439,4 +435,40 @@ func (p *Pool) RunFunc(ctx context.Context, tgt map[string]OperationMode, wait b
 	}
 
 	return tid, task.Err()
+}
+
+func (p *Pool) ids(keys ...string) []string {
+	if len(keys) == 0 {
+		result := make([]string, 0, len(p.table))
+
+		for tid := range p.table {
+			result = append(result, tid)
+		}
+
+		return result
+	}
+
+	m := make(map[string]struct{})
+
+	// Get task IDs from classifiers using the given keys as labels
+	for _, tid := range p.classifier.Get(keys...) {
+		if _, found := p.table[tid]; found {
+			m[tid] = struct{}{}
+		}
+	}
+
+	// Сheck if there are task IDs in the given keys
+	for _, tid := range keys {
+		if _, found := p.table[tid]; found {
+			m[tid] = struct{}{}
+		}
+	}
+
+	result := make([]string, 0, len(m))
+
+	for tid := range m {
+		result = append(result, tid)
+	}
+
+	return result
 }
