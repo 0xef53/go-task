@@ -65,6 +65,8 @@ type Task interface {
 
 	SetProgress(int)
 
+	SetUninterruptible()
+
 	Stat() *TaskStat
 	Metadata() interface{}
 }
@@ -263,6 +265,25 @@ func (t *GenericTask) Wait() {
 	<-t.released
 }
 
+// isCancellableContext checks whether the given context can be canceled.
+func isCancellableContext(ctx context.Context) bool {
+	// If the context has a "Done()" channel that is not "nil",
+	// then it can be canceled (it is true for context.WithCancel,
+	// context.WithTimeout, context.WithDeadline).
+	// Contexts based on context.Background() and context.TODO() return "nil" for "Done()"".
+	select {
+	case <-ctx.Done():
+		// The channel is closed, but the very fact that there is a non-nil channel
+		// indicates that cancellation is possible
+		return true
+	default:
+		// Two options:
+		// * channel is not nil, is not closed, and can be canceled
+		// * or channel is nil (for Background/TODO) and cannot be canceled
+		return ctx.Done() != nil
+	}
+}
+
 // Cancel attempts to cancel the running task by invoking its cancel function.
 // Returns ErrTaskNotRunning if the task is not currently running.
 //
@@ -270,6 +291,10 @@ func (t *GenericTask) Wait() {
 func (t *GenericTask) Cancel() error {
 	t.Lock()
 	defer t.Unlock()
+
+	if !isCancellableContext(t.ctx) {
+		return ErrUninterruptibleTask
+	}
 
 	if t.cancel == nil {
 		return ErrTaskNotRunning
@@ -281,6 +306,20 @@ func (t *GenericTask) Cancel() error {
 	t.cancel()
 
 	return nil
+}
+
+func (t *GenericTask) setUninterruptible() {
+	t.ctx = context.WithoutCancel(t.ctx)
+}
+
+// SetUninterruptible marks the task as uninterruptible, which means it cannot be
+// canceled by calling Cancel(), which will return the error ErrUninterruptibleTask
+// in this case.
+func (t *GenericTask) SetUninterruptible() {
+	t.Lock()
+	defer t.Unlock()
+
+	t.setUninterruptible()
 }
 
 // IsRunning returns true if the task is currently running.
